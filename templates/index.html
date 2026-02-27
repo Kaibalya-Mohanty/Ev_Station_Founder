@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>EV Charge Finder - GPS Portal</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
+            min-height: 100vh; padding: 20px;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .container {
+            max-width: 500px; width: 100%;
+            background: rgba(255,255,255,0.95);
+            border-radius: 24px;
+            padding: 40px;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.3);
+        }
+        .header { text-align: center; margin-bottom: 30px; }
+        .logo {
+            width: 72px; height: 72px;
+            background: linear-gradient(135deg, #3b82f6, #10b981);
+            border-radius: 20px;
+            margin: 0 auto 20px;
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 15px 35px rgba(59,130,246,0.4);
+        }
+        .logo i { font-size: 32px; color: white; }
+        h1 {
+            font-size: 28px; font-weight: 700;
+            background: linear-gradient(135deg, #1e293b, #334155);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+
+        /* Battery Section Styling */
+        .battery-container {
+            background: #f8fafc;
+            padding: 20px;
+            border-radius: 16px;
+            margin-bottom: 24px;
+            border: 1px solid #e2e8f0;
+        }
+        .battery-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            color: #475569;
+            font-weight: 600;
+        }
+        .battery-slider {
+            -webkit-appearance: none;
+            width: 100%; height: 8px;
+            border-radius: 5px;
+            background: #e2e8f0;
+            outline: none;
+            transition: 0.2s;
+        }
+        .battery-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 24px; height: 24px;
+            border-radius: 50%;
+            background: #10b981;
+            cursor: pointer;
+            box-shadow: 0 0 10px rgba(16,185,129,0.3);
+        }
+
+        .gps-section { text-align: center; margin-bottom: 24px; }
+        #gps-target-btn {
+            background: white; border: 3px solid #3b82f6;
+            width: 70px; height: 70px; border-radius: 50%;
+            cursor: pointer; margin: 0 auto 15px;
+            display: flex; align-items: center; justify-content: center;
+            transition: all 0.3s;
+        }
+        .gps-target { width: 30px; height: 30px; border-radius: 50%; border: 3px solid #3b82f6; position: relative; }
+        .gps-dot { width: 12px; height: 12px; background: #3b82f6; border-radius: 50%; position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); }
+        #gps-status { padding: 12px; font-size: 14px; color: #64748b; border-radius: 10px; background: #f1f5f9; }
+
+        .form-group input {
+            width: 100%; padding: 16px; border: 2px solid #e2e8f0;
+            border-radius: 14px; font-size: 15px; margin-bottom: 12px;
+            transition: 0.3s;
+        }
+        .form-group input:focus { border-color: #3b82f6; outline: none; }
+
+        .find-btn {
+            width: 100%; padding: 18px; background: linear-gradient(135deg, #10b981, #059669);
+            color: white; border: none; border-radius: 16px; font-size: 18px; font-weight: 600;
+            cursor: pointer; transition: 0.3s;
+        }
+        .find-btn:hover { transform: translateY(-2px); box-shadow: 0 10px 25px rgba(16,185,129,0.3); }
+
+        .logout {
+            display: block; margin-top: 20px; text-align: center; color: #ef4444;
+            text-decoration: none; font-size: 14px; font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo"><i class="fas fa-bolt"></i></div>
+            <h1>Find EV Stations</h1>
+            <p style="color: #64748b; font-size: 14px; margin-top: 5px;">Optimized for your current range</p>
+        </div>
+
+        <form method="POST" action="/result">
+            <div class="battery-container">
+                <div class="battery-header">
+                    <span><i class="fas fa-car-battery"></i> Current Charge</span>
+                    <span id="batt-text" style="color: #10b981;">50%</span>
+                </div>
+                <input type="range" name="battery_percent" id="battery-slider" class="battery-slider"
+                       min="1" max="100" value="50" oninput="updateBatteryUI(this.value)">
+            </div>
+
+            <div class="gps-section">
+                <button type="button" id="gps-target-btn" onclick="getLiveGPS()">
+                    <div class="gps-target"><div class="gps-dot"></div></div>
+                </button>
+                <div id="gps-status">Locating your vehicle...</div>
+            </div>
+
+            <div class="form-group">
+                <input type="number" step="any" id="latitude" name="latitude" placeholder="Latitude" required>
+                <input type="number" step="any" id="longitude" name="longitude" placeholder="Longitude" required>
+            </div>
+
+            <button type="submit" class="find-btn">
+                <i class="fas fa-search-location"></i> Get Reachable Stations
+            </button>
+        </form>
+
+        <a href="/logout" class="logout"><i class="fas fa-sign-out-alt"></i> Logout</a>
+    </div>
+
+    <script>
+        // Update the Battery text label and color dynamically
+        function updateBatteryUI(val) {
+            const text = document.getElementById('batt-text');
+            text.innerText = val + '%';
+
+            // Change color based on charge level
+            if (val < 20) text.style.color = '#ef4444';      // Red
+            else if (val < 50) text.style.color = '#f59e0b'; // Orange
+            else text.style.color = '#10b981';               // Green
+        }
+
+        function getLiveGPS() {
+            const status = document.getElementById('gps-status');
+            const latInput = document.getElementById('latitude');
+            const lonInput = document.getElementById('longitude');
+
+            status.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Fetching Satellite Data...';
+
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    function(position) {
+                        latInput.value = position.coords.latitude.toFixed(6);
+                        lonInput.value = position.coords.longitude.toFixed(6);
+                        status.innerHTML = '✅ Location Secured';
+                        status.style.background = '#ecfdf5';
+                        status.style.color = '#059669';
+                    },
+                    function(error) {
+                        status.innerHTML = '❌ GPS Denied. Please enter manually.';
+                        status.style.color = '#ef4444';
+                    },
+                    { enableHighAccuracy: true, timeout: 10000 }
+                );
+            }
+        }
+
+        // Run GPS on load
+        window.onload = getLiveGPS;
+    </script>
+</body>
+</html>
