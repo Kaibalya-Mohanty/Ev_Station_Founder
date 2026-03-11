@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cluster Zone Map — EV Station Finder</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0d1117; color: #e8f4ff; }
+
+  /* ── TOP BAR ── */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 24px;
+    background: #0d1520;
+    border-bottom: 1px solid #1e3048;
+    position: relative; z-index: 1000;
+  }
+  .topbar h1 { font-size: 1.1rem; font-weight: 700; color: #00e5ff; }
+  .topbar span { font-size: 0.8rem; color: #5a7a99; }
+  .topbar a {
+    text-decoration: none; font-size: 0.8rem;
+    padding: 6px 16px; border: 1px solid #1e3048;
+    color: #5a7a99; transition: all 0.2s;
+  }
+  .topbar a:hover { border-color: #00e5ff; color: #00e5ff; }
+
+  /* ── LAYOUT ── */
+  .layout { display: flex; height: calc(100vh - 49px); overflow: hidden; }
+
+  /* ── SIDEBAR ── */
+  .sidebar {
+    width: 300px; flex-shrink: 0;
+    background: #0d1520;
+    border-right: 1px solid #1e3048;
+    overflow-y: auto; padding: 16px;
+  }
+  .sidebar::-webkit-scrollbar { width: 3px; }
+  .sidebar::-webkit-scrollbar-thumb { background: #1e3048; }
+
+  .sidebar-title {
+    font-size: 0.65rem; letter-spacing: 0.2em;
+    color: #00e5ff; text-transform: uppercase;
+    margin-bottom: 12px; font-family: monospace;
+  }
+
+  .stat-row {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 8px; margin-bottom: 16px;
+  }
+  .stat-box {
+    background: #111c2b; border: 1px solid #1e3048;
+    padding: 10px 12px; text-align: center;
+  }
+  .stat-num { font-size: 1.8rem; font-weight: 700; color: #00e5ff; line-height: 1; }
+  .stat-lbl { font-size: 0.6rem; color: #5a7a99; text-transform: uppercase; letter-spacing: 0.1em; }
+
+  .cluster-list { display: flex; flex-direction: column; gap: 6px; }
+
+  .cluster-item {
+    background: #111c2b; border: 1px solid #1e3048;
+    padding: 10px 12px; cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: all 0.15s;
+  }
+  .cluster-item:hover { border-color: #00e5ff; background: #152030; }
+
+  .cluster-top { display: flex; justify-content: space-between; align-items: center; }
+  .cluster-name { font-size: 0.8rem; font-weight: 600; }
+  .cluster-count {
+    font-family: monospace; font-size: 0.65rem;
+    background: rgba(0,229,255,0.1); color: #00e5ff;
+    padding: 2px 8px; border: 1px solid rgba(0,229,255,0.2);
+  }
+  .cluster-meta { font-size: 0.7rem; color: #5a7a99; margin-top: 4px; }
+
+  /* ── MAP ── */
+  #map { flex: 1; height: 100%; min-height: 500px; background: #1a1a2e; }
+
+  /* ── INFO PANEL (top-right overlay) ── */
+  .map-info-panel {
+    position: absolute; top: 70px; right: 16px;
+    background: rgba(13,21,32,0.95); border: 1px solid #1e3048;
+    padding: 14px 18px; z-index: 500;
+    font-size: 0.75rem; min-width: 200px;
+    backdrop-filter: blur(10px);
+  }
+  .map-info-panel h3 {
+    font-family: monospace; font-size: 0.6rem; letter-spacing: 0.15em;
+    color: #00e5ff; text-transform: uppercase; margin-bottom: 10px;
+  }
+  .info-row { display: flex; justify-content: space-between; margin-bottom: 6px; }
+  .info-key { color: #5a7a99; }
+  .info-val { color: #e8f4ff; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div>
+    <h1>⚡ VOLT.FIND — Cluster Zone Map</h1>
+    <span>KMeans geographic clustering of {{ total_stations }} stations into {{ total_clusters }} zones</span>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <span style="color:#5a7a99">{{ username }}</span>
+    <a href="/dashboard">← Dashboard</a>
+    <a href="/logout">Logout</a>
+  </div>
+</div>
+
+<div class="layout">
+
+  <!-- SIDEBAR: Cluster list -->
+  <div class="sidebar">
+    <div class="sidebar-title">// Zone Overview</div>
+
+    <div class="stat-row">
+      <div class="stat-box">
+        <div class="stat-num">{{ total_stations }}</div>
+        <div class="stat-lbl">Total Stations</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num" style="color:#39ff14">{{ total_clusters }}</div>
+        <div class="stat-lbl">Zones</div>
+      </div>
+    </div>
+
+    <div class="sidebar-title">// All Cluster Zones</div>
+    <div class="cluster-list" id="clusterList"></div>
+  </div>
+
+  <!-- MAP -->
+  <div style="position:relative;flex:1">
+    <div id="map"></div>
+
+    <div class="map-info-panel">
+      <h3>// KNN Lookup</h3>
+      <div id="knnInfo" style="color:#5a7a99;font-size:0.7rem">
+        Click any station marker to see its cluster zone and nearest neighbours.
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── Data from Flask ──────────────────────────────────────────────────────────
+const STATIONS = {{ stations_json | safe }};
+const CLUSTERS = {{ clusters_json | safe }};
+
+// ── Init Leaflet Map ─────────────────────────────────────────────────────────
+const map = L.map('map', { zoomControl: true }).setView([20.5937, 78.9629], 5);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap contributors',
+  maxZoom: 19
+}).addTo(map);
+
+// Force map to recalculate size after layout renders
+setTimeout(() => { map.invalidateSize(); }, 200);
+
+// ── Plot Stations ─────────────────────────────────────────────────────────────
+const markersByCluster = {};
+
+STATIONS.forEach(s => {
+  const color = s.cluster_color || '#888';
+
+  const circleMarker = L.circleMarker([s.lat, s.lon], {
+    radius      : 5,
+    fillColor   : color,
+    color       : color,
+    weight      : 1,
+    opacity     : 0.9,
+    fillOpacity : 0.75,
+  });
+
+  circleMarker.bindPopup(`
+    <div style="font-family:monospace;font-size:0.75rem;color:#e8f4ff;min-width:180px">
+      <div style="font-size:0.9rem;font-weight:700;color:${color};margin-bottom:6px">${s.name}</div>
+      <div style="color:#aaa">${s.city}, ${s.state}</div>
+      <div style="margin-top:8px;padding:4px 8px;background:rgba(255,255,255,0.05);border:1px solid #333">
+        Zone <span style="color:${color};font-weight:700">#${s.cluster_id}</span>
+      </div>
+    </div>
+  `, { maxWidth: 250 });
+
+  circleMarker.on('click', () => showKnnInfo(s));
+  circleMarker.addTo(map);
+
+  if (!markersByCluster[s.cluster_id]) markersByCluster[s.cluster_id] = [];
+  markersByCluster[s.cluster_id].push(circleMarker);
+});
+
+// ── Plot Cluster Centroids ────────────────────────────────────────────────────
+CLUSTERS.forEach(c => {
+  const color = c.color;
+
+  const icon = L.divIcon({
+    html: `<div style="
+      background:${color};color:#000;font-weight:800;
+      font-size:0.65rem;font-family:monospace;
+      width:28px;height:28px;border-radius:50%;
+      display:flex;align-items:center;justify-content:center;
+      border:2px solid rgba(255,255,255,0.3);
+      box-shadow:0 0 12px ${color};
+    ">${c.cluster_id}</div>`,
+    className: '',
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+  });
+
+  L.marker([c.centroid_lat, c.centroid_lon], { icon })
+    .bindPopup(`
+      <div style="font-family:monospace;font-size:0.75rem;color:#e8f4ff;min-width:200px">
+        <div style="font-size:1rem;font-weight:800;color:${color};margin-bottom:8px">
+          Zone #${c.cluster_id}
+        </div>
+        <div><span style="color:#888">Stations:</span>  <strong>${c.station_count}</strong></div>
+        <div><span style="color:#888">Top State:</span> <strong>${c.dominant_state}</strong></div>
+        <div><span style="color:#888">Top City:</span>  <strong>${c.top_city}</strong></div>
+        <div style="margin-top:6px;color:#888;font-size:0.65rem">
+          Centroid: ${c.centroid_lat}, ${c.centroid_lon}
+        </div>
+      </div>
+    `, { maxWidth: 260 })
+    .addTo(map);
+});
+
+// ── KNN Info Panel ────────────────────────────────────────────────────────────
+function showKnnInfo(station) {
+  const color = station.cluster_color || '#00e5ff';
+  document.getElementById('knnInfo').innerHTML = `
+    <div style="color:${color};font-weight:700;margin-bottom:8px">${station.name}</div>
+    <div class="info-row">
+      <span class="info-key">City</span>
+      <span class="info-val">${station.city}</span>
+    </div>
+    <div class="info-row">
+      <span class="info-key">State</span>
+      <span class="info-val">${station.state}</span>
+    </div>
+    <div class="info-row">
+      <span class="info-key">Cluster Zone</span>
+      <span class="info-val" style="color:${color}">#${station.cluster_id}</span>
+    </div>
+    <div style="margin-top:10px;padding:8px;background:rgba(0,229,255,0.05);border:1px solid #1e3048;font-size:0.65rem;color:#5a7a99">
+      Use /knn?lat=${station.lat}&lon=${station.lon}&k=5<br>to get nearest neighbours via API.
+    </div>
+  `;
+}
+
+// ── Sidebar Cluster List ──────────────────────────────────────────────────────
+const listEl = document.getElementById('clusterList');
+CLUSTERS.forEach(c => {
+  const el = document.createElement('div');
+  el.className = 'cluster-item';
+  el.style.borderLeftColor = c.color;
+  el.innerHTML = `
+    <div class="cluster-top">
+      <span class="cluster-name" style="color:${c.color}">Zone #${c.cluster_id}</span>
+      <span class="cluster-count">${c.station_count}</span>
+    </div>
+    <div class="cluster-meta">${c.dominant_state} · ${c.top_city}</div>
+  `;
+  el.addEventListener('click', () => {
+    map.setView([c.centroid_lat, c.centroid_lon], 8);
+    // Highlight stations in this cluster
+    CLUSTERS.forEach(other => {
+      (markersByCluster[other.cluster_id] || []).forEach(m => {
+        m.setStyle({ opacity: other.cluster_id === c.cluster_id ? 1 : 0.15,
+                     fillOpacity: other.cluster_id === c.cluster_id ? 0.9 : 0.1 });
+      });
+    });
+  });
+  listEl.appendChild(el);
+});
+
+// Reset marker visibility on map click
+map.on('click', () => {
+  CLUSTERS.forEach(c => {
+    (markersByCluster[c.cluster_id] || []).forEach(m => {
+      m.setStyle({ opacity: 0.9, fillOpacity: 0.75 });
+    });
+  });
+});
+</script>
+</body>
+</html>
