@@ -1,11 +1,10 @@
-from flask import Flask, render_template, request, session, redirect, url_for, flash, jsonify
+from flask import Flask, render_template, request, session, redirect, url_for, jsonify
 from knn_clustering import EVStationClusterer
 import pandas as pd
-import json
+import numpy as np
 import math
 import os
 import sqlite3
-import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from werkzeug.security import generate_password_hash, check_password_hash
 import requests as http_requests
@@ -14,9 +13,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = "ev_charge_finder_secret_key_2026"
 
 DATABASE = "users.db"
-
-# Load API key from environment
-OPENCAGE_API_KEY = os.environ.get("OPENCAGE_API_KEY")
+OPENCAGE_API_KEY = os.environ.get("OPENCAGE_API_KEY", "")
 
 df = None
 ml_model = None
@@ -64,14 +61,12 @@ if os.path.exists(csv_file):
     try:
 
         df = pd.read_csv(csv_file)
-
         df.columns = df.columns.str.strip()
 
         df['lattitude'] = (
             df['lattitude']
             .astype(str)
             .str.replace(',', '')
-            .str.strip()
             .astype(float)
         )
 
@@ -79,26 +74,28 @@ if os.path.exists(csv_file):
             df['longitude']
             .astype(str)
             .str.replace(',', '')
-            .str.strip()
             .astype(float)
         )
 
-        print("EV Stations Loaded:", len(df))
+        print("Stations Loaded:", len(df))
 
     except Exception as e:
-        print("CSV Error:", e)
+
+        print("CSV error:", e)
         df = pd.DataFrame()
 
 else:
+
     print("CSV not found")
     df = pd.DataFrame()
 
 
 # ==============================
-# ML MODEL
+# MACHINE LEARNING MODEL
 # ==============================
 
 def train_demand_model():
+
     global ml_model
 
     if df.empty:
@@ -127,14 +124,16 @@ def predict_station_demand(lat, lon):
         return 0
 
     try:
+
         pred = ml_model.predict([[lat, lon]])
         return int(pred[0])
+
     except:
         return 0
 
 
 # ==============================
-# KNN CLUSTERING
+# CLUSTERING
 # ==============================
 
 def init_clusterer():
@@ -151,6 +150,7 @@ def init_clusterer():
             print("Clusterer ready")
 
         except Exception as e:
+
             print("Cluster error:", e)
 
 
@@ -169,13 +169,13 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     dlon = math.radians(lon2 - lon1)
 
     a = (
-        math.sin(dlat / 2) ** 2 +
+        math.sin(dlat/2)**2 +
         math.cos(math.radians(lat1)) *
         math.cos(math.radians(lat2)) *
-        math.sin(dlon / 2) ** 2
+        math.sin(dlon/2)**2
     )
 
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
     return R * c
 
@@ -185,7 +185,7 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 # ==============================
 
 @app.route('/')
-def landing():
+def home():
     return render_template("home.html")
 
 
@@ -195,7 +195,67 @@ def dashboard():
     if 'user_id' not in session:
         return redirect(url_for('login'))
 
-    return render_template("index.html", username=session['username'])
+    return render_template(
+        "index.html",
+        username=session['username']
+    )
+
+
+# ==============================
+# FIND STATIONS
+# ==============================
+
+@app.route('/find', methods=['POST'])
+def find_stations():
+
+    source_lat = float(request.form.get("source_lat"))
+    source_lon = float(request.form.get("source_lon"))
+
+    dest_lat = float(request.form.get("dest_lat"))
+    dest_lon = float(request.form.get("dest_lon"))
+
+    battery_range = float(request.form.get("range"))
+
+    stations = []
+
+    if df is not None and not df.empty:
+
+        for _, row in df.iterrows():
+
+            dist = calculate_distance(
+                source_lat,
+                source_lon,
+                row['lattitude'],
+                row['longitude']
+            )
+
+            if dist <= battery_range:
+
+                demand = predict_station_demand(
+                    row['lattitude'],
+                    row['longitude']
+                )
+
+                stations.append({
+
+                    "name": row.get("station_name", "EV Station"),
+                    "lat": row['lattitude'],
+                    "lon": row['longitude'],
+                    "distance": round(dist, 2),
+                    "demand": demand
+
+                })
+
+    return render_template(
+
+        "result.html",
+        stations=stations,
+        source_lat=source_lat,
+        source_lon=source_lon,
+        dest_lat=dest_lat,
+        dest_lon=dest_lon
+
+    )
 
 
 # ==============================
@@ -213,24 +273,22 @@ def autocomplete():
     try:
 
         params = {
+
             "q": query,
             "key": OPENCAGE_API_KEY,
             "limit": 6,
             "language": "en",
             "countrycode": "in",
             "no_annotations": 1
+
         }
 
-        prox_lat = request.args.get("lat")
-        prox_lon = request.args.get("lon")
-
-        if prox_lat and prox_lon:
-            params["proximity"] = f"{prox_lat},{prox_lon}"
-
         response = http_requests.get(
+
             "https://api.opencagedata.com/geocode/v1/json",
             params=params,
             timeout=5
+
         )
 
         if response.status_code != 200:
@@ -246,15 +304,17 @@ def autocomplete():
             formatted = item.get("formatted", "")
 
             results.append({
+
                 "display_name": formatted,
-                "full_address": formatted,
                 "lat": geo.get("lat"),
                 "lon": geo.get("lng")
+
             })
 
         return jsonify(results)
 
     except Exception as e:
+
         print("Autocomplete error:", e)
         return jsonify([])
 
