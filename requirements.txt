@@ -1,1 +1,8 @@
-
+Flask
+gunicorn
+pandas
+numpy
+scikit-learn
+werkzeug
+requests
+joblib
