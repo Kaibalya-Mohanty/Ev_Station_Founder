@@ -4,3 +4,10 @@ pandas
 numpy
 scikit-learn
 Werkzeug
+requestsFlask
+gunicorn
+pandas
+numpy
+scikit-learn
+Werkzeug
+
