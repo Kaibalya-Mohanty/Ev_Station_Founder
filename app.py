@@ -1,27 +1,28 @@
-from flask import Flask, render_template, request, session, redirect, url_for, jsonify
+from flask import Flask, render_template, request, session, redirect, url_for, flash, jsonify
 from knn_clustering import EVStationClusterer
 import pandas as pd
-import numpy as np
+import json
 import math
 import os
 import sqlite3
+import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from werkzeug.security import generate_password_hash, check_password_hash
 import requests as http_requests
 
 app = Flask(__name__)
+
+# 🔐 SECRET KEY
 app.config['SECRET_KEY'] = "ev_charge_finder_secret_key_2026"
 
 DATABASE = "users.db"
-OPENCAGE_API_KEY = os.environ.get("OPENCAGE_API_KEY", "")
-
 df = None
 ml_model = None
 clusterer = None
 
 
 # ==============================
-# DATABASE
+# DATABASE CONNECTION
 # ==============================
 
 def get_db_connection():
@@ -32,17 +33,15 @@ def get_db_connection():
 
 def init_db():
     conn = get_db_connection()
-
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE,
-        email TEXT UNIQUE,
-        password TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -51,22 +50,24 @@ init_db()
 
 
 # ==============================
-# LOAD CSV
+# LOAD CSV DATA
 # ==============================
 
-csv_file = os.path.join(os.path.dirname(__file__), "india_ev_charging_stations.csv")
+csv_file = "india_ev_charging_stations.csv"
 
 if os.path.exists(csv_file):
-
     try:
-
         df = pd.read_csv(csv_file)
+
+        # Clean column names
         df.columns = df.columns.str.strip()
 
+        # 🔧 FIX: Clean latitude and longitude values
         df['lattitude'] = (
             df['lattitude']
             .astype(str)
             .str.replace(',', '')
+            .str.strip()
             .astype(float)
         )
 
@@ -74,19 +75,17 @@ if os.path.exists(csv_file):
             df['longitude']
             .astype(str)
             .str.replace(',', '')
+            .str.strip()
             .astype(float)
         )
 
-        print("Stations Loaded:", len(df))
+        print(f"✅ Loaded {len(df)} EV Stations")
 
     except Exception as e:
-
-        print("CSV error:", e)
+        print("CSV Load Error:", e)
         df = pd.DataFrame()
-
 else:
-
-    print("CSV not found")
+    print("❌ CSV file not found!")
     df = pd.DataFrame()
 
 
@@ -95,70 +94,60 @@ else:
 # ==============================
 
 def train_demand_model():
-
     global ml_model
 
     if df.empty:
         return
 
     try:
-
         X = df[['lattitude', 'longitude']].values
+
+        # Simulated demand values
         y = np.random.randint(20, 200, size=len(df))
 
         ml_model = RandomForestRegressor(n_estimators=50)
         ml_model.fit(X, y)
 
-        print("ML model trained")
+        print("✅ ML Demand Model Trained")
 
     except Exception as e:
-        print("ML error:", e)
+        print("ML Training Error:", e)
 
 
 train_demand_model()
 
 
 def predict_station_demand(lat, lon):
-
     if ml_model is None:
         return 0
 
     try:
-
-        pred = ml_model.predict([[lat, lon]])
-        return int(pred[0])
-
+        prediction = ml_model.predict([[lat, lon]])
+        return int(prediction[0])
     except:
         return 0
 
 
 # ==============================
-# CLUSTERING
+# KNN CLUSTERING MODEL
 # ==============================
 
 def init_clusterer():
-
     global clusterer
-
     if df is not None and not df.empty:
-
         try:
-
             clusterer = EVStationClusterer(df)
             clusterer.fit(n_clusters=15, n_neighbors=5)
-
-            print("Clusterer ready")
-
+            print("✅ KNN Clusterer Ready")
         except Exception as e:
-
-            print("Cluster error:", e)
+            print("KNN Clustering Error:", e)
 
 
 init_clusterer()
 
 
 # ==============================
-# DISTANCE
+# DISTANCE CALCULATION
 # ==============================
 
 def calculate_distance(lat1, lon1, lat2, lon2):
@@ -169,25 +158,114 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     dlon = math.radians(lon2 - lon1)
 
     a = (
-        math.sin(dlat/2)**2 +
+        math.sin(dlat / 2) ** 2 +
         math.cos(math.radians(lat1)) *
         math.cos(math.radians(lat2)) *
-        math.sin(dlon/2)**2
+        math.sin(dlon / 2) ** 2
     )
 
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
     return R * c
 
 
 # ==============================
-# ROUTES
+# LANDING PAGE
 # ==============================
 
 @app.route('/')
-def home():
+def landing():
     return render_template("home.html")
 
+
+# ==============================
+# REGISTER
+# ==============================
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+
+    if request.method == 'POST':
+
+        username = request.form['username'].strip()
+        email = request.form['email'].strip()
+        password = generate_password_hash(request.form['password'])
+
+        try:
+
+            conn = get_db_connection()
+
+            conn.execute(
+                "INSERT INTO users (username,email,password) VALUES (?,?,?)",
+                (username, email, password)
+            )
+
+            conn.commit()
+            conn.close()
+
+            flash("Account created successfully!", "success")
+
+            return redirect(url_for('login'))
+
+        except sqlite3.IntegrityError:
+            flash("Username or Email already exists!", "error")
+
+    return render_template("register.html")
+
+
+# ==============================
+# LOGIN
+# ==============================
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+
+    if request.method == 'POST':
+
+        username = request.form['username'].strip()
+        password = request.form['password']
+
+        conn = get_db_connection()
+
+        user = conn.execute(
+            "SELECT * FROM users WHERE username=?",
+            (username,)
+        ).fetchone()
+
+        conn.close()
+
+        if user and check_password_hash(user['password'], password):
+
+            session['user_id'] = user['id']
+            session['username'] = user['username']
+
+            flash("Welcome back!", "success")
+
+            return redirect(url_for('dashboard'))
+
+        else:
+            flash("Invalid credentials!", "error")
+
+    return render_template("login.html")
+
+
+# ==============================
+# LOGOUT
+# ==============================
+
+@app.route('/logout')
+def logout():
+
+    session.clear()
+
+    flash("Logged out successfully!", "success")
+
+    return redirect(url_for('landing'))
+
+
+# ==============================
+# DASHBOARD
+# ==============================
 
 @app.route('/dashboard')
 def dashboard():
@@ -202,119 +280,251 @@ def dashboard():
 
 
 # ==============================
-# FIND STATIONS
+# EV SEARCH RESULT
 # ==============================
 
-@app.route('/find', methods=['POST'])
-def find_stations():
+@app.route('/result', methods=['POST'])
+def result():
 
-    source_lat = float(request.form.get("source_lat"))
-    source_lon = float(request.form.get("source_lon"))
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
 
-    dest_lat = float(request.form.get("dest_lat"))
-    dest_lon = float(request.form.get("dest_lon"))
+    try:
 
-    battery_range = float(request.form.get("range"))
+        user_lat = float(request.form['latitude'])
+        user_lon = float(request.form['longitude'])
+        battery = float(request.form.get('battery_percent', 50))
 
-    stations = []
+        safe_battery = max(0, battery - 5)
 
-    if df is not None and not df.empty:
+        max_range = safe_battery * 2.5
+
+        nearby_stations = []
 
         for _, row in df.iterrows():
 
-            dist = calculate_distance(
-                source_lat,
-                source_lon,
-                row['lattitude'],
-                row['longitude']
-            )
+            try:
 
-            if dist <= battery_range:
+                s_lat = float(row['lattitude'])
+                s_lon = float(row['longitude'])
 
-                demand = predict_station_demand(
-                    row['lattitude'],
-                    row['longitude']
+                dist = calculate_distance(
+                    user_lat,
+                    user_lon,
+                    s_lat,
+                    s_lon
                 )
 
-                stations.append({
+                if dist <= max_range:
 
-                    "name": row.get("station_name", "EV Station"),
-                    "lat": row['lattitude'],
-                    "lon": row['longitude'],
-                    "distance": round(dist, 2),
-                    "demand": demand
+                    demand = predict_station_demand(s_lat, s_lon)
 
-                })
+                    nearby_stations.append({
 
-    return render_template(
+                        "name": str(row.get('name', 'N/A')),
 
-        "result.html",
-        stations=stations,
-        source_lat=source_lat,
-        source_lon=source_lon,
-        dest_lat=dest_lat,
-        dest_lon=dest_lon
+                        "lat": s_lat,
+                        "lon": s_lon,
 
-    )
+                        "distance": round(dist, 2),
+
+                        "demand_score": demand,
+
+                        "address": str(row.get('address', 'N/A')),
+
+                        "city": str(row.get('city', 'N/A')),
+
+                        "state": str(row.get('state', 'N/A')),
+
+                        # KNN cluster defaults (overwritten below if clusterer is ready)
+                        "cluster_id": -1,
+                        "cluster_color": "#888888"
+
+                    })
+
+            except:
+                continue
+
+        # ── KNN: attach cluster zone info to each nearby station ──────────────
+        if clusterer is not None and nearby_stations:
+            try:
+                knn_results = clusterer.find_nearest(user_lat, user_lon, k=min(20, len(nearby_stations)))
+                # Build lookup by (lat, lon)
+                knn_lookup = {(r['lat'], r['lon']): r for r in knn_results}
+                for s in nearby_stations:
+                    key = (s['lat'], s['lon'])
+                    if key in knn_lookup:
+                        s['cluster_id']    = knn_lookup[key]['cluster_id']
+                        s['cluster_color'] = knn_lookup[key]['cluster_color']
+            except Exception as e:
+                print("KNN lookup error:", e)
+
+        # Smart ranking
+        nearby_stations.sort(
+            key=lambda x: (x['distance'], -x['demand_score'])
+        )
+
+        # User's cluster zone info
+        user_cluster = None
+        if clusterer is not None:
+            try:
+                user_cluster = clusterer.predict_cluster(user_lat, user_lon)
+            except:
+                pass
+
+        # All stations for background cluster map display
+        all_stations_json = json.dumps(
+            clusterer.get_all_clustered() if clusterer is not None else []
+        )
+
+        return render_template(
+
+            "result.html",
+
+            stations=nearby_stations,
+
+            stations_json=json.dumps(nearby_stations),
+
+            count=len(nearby_stations),
+
+            battery=int(battery),
+
+            max_range=round(max_range, 1),
+
+            username=session['username'],
+
+            u_lat=user_lat,
+            u_lon=user_lon,
+
+            user_cluster=user_cluster,
+
+            all_stations_json=all_stations_json
+
+        )
+
+    except Exception as e:
+
+        flash(f"Error: {str(e)}", "error")
+
+        return redirect(url_for('dashboard'))
 
 
 # ==============================
-# AUTOCOMPLETE
+# KNN NEAREST STATIONS (JSON API)
+# GET /knn?lat=12.97&lon=77.59&k=5
+# ==============================
+
+@app.route('/knn')
+def knn_nearest():
+
+    if 'user_id' not in session:
+        return {"error": "Login required"}, 401
+
+    try:
+        lat = float(request.args.get('lat'))
+        lon = float(request.args.get('lon'))
+        k   = min(int(request.args.get('k', 5)), 20)
+    except (TypeError, ValueError):
+        return {"error": "Invalid lat/lon parameters"}, 400
+
+    if clusterer is None:
+        return {"error": "Clustering model not initialised"}, 500
+
+    nearest      = clusterer.find_nearest(lat, lon, k=k)
+    user_cluster = clusterer.predict_cluster(lat, lon)
+
+    return {
+        "user_cluster": user_cluster,
+        "nearest":      nearest,
+        "count":        len(nearest),
+    }
+
+
+# ==============================
+# CLUSTER MAP PAGE
+# GET /cluster-map
+# ==============================
+
+@app.route('/cluster-map')
+def cluster_map():
+
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    if clusterer is None:
+        flash("Clustering model not ready.", "error")
+        return redirect(url_for('dashboard'))
+
+    stations_data = clusterer.get_all_clustered()
+    cluster_data  = clusterer.cluster_summary()
+
+    return render_template(
+        "cluster_map.html",
+        username       = session['username'],
+        stations_json  = json.dumps(stations_data),
+        clusters_json  = json.dumps(cluster_data),
+        total_stations = len(stations_data),
+        total_clusters = len(cluster_data),
+    )
+
+
+
+# ==============================
+# OPENCAGE API KEY
+# ==============================
+
+OPENCAGE_API_KEY = "4da581d65658457e9ebc72841754dc48"
+
+
+# ==============================
+# AUTOCOMPLETE — OpenCage API
+# GET /autocomplete?q=bhubaneswar
+# Returns [{display_name, full_address, lat, lon}, ...]
 # ==============================
 
 @app.route('/autocomplete')
 def autocomplete():
-
     query = request.args.get('q', '').strip()
-
     if len(query) < 2:
         return jsonify([])
-
     try:
-
-        params = {
-
-            "q": query,
-            "key": OPENCAGE_API_KEY,
-            "limit": 6,
-            "language": "en",
-            "countrycode": "in",
-            "no_annotations": 1
-
-        }
-
-        response = http_requests.get(
-
-            "https://api.opencagedata.com/geocode/v1/json",
-            params=params,
+        resp = http_requests.get(
+            'https://api.opencagedata.com/geocode/v1/json',
+            params={
+                'q':              query,
+                'key':            OPENCAGE_API_KEY,
+                'limit':          6,
+                'language':       'en',
+                'countrycode':    'in',       # India only
+                'no_annotations': 1,
+                'no_record':      1,
+            },
             timeout=5
-
         )
-
-        if response.status_code != 200:
-            return jsonify([])
-
-        data = response.json()
-
+        data = resp.json()
         results = []
-
-        for item in data.get("results", []):
-
-            geo = item.get("geometry", {})
-            formatted = item.get("formatted", "")
-
+        for item in data.get('results', []):
+            comp     = item.get('components', {})
+            geometry = item.get('geometry', {})
+            # Build clean short label: neighbourhood → city → state (max 3 parts)
+            name_parts = []
+            for field in ['neighbourhood', 'suburb', 'village', 'town',
+                          'city', 'county', 'state_district', 'state']:
+                val = comp.get(field, '')
+                if val and val not in name_parts:
+                    name_parts.append(val)
+                if len(name_parts) == 3:
+                    break
+            short_name   = ', '.join(name_parts) if name_parts else item.get('formatted', '')
+            full_address = item.get('formatted', short_name)
             results.append({
-
-                "display_name": formatted,
-                "lat": geo.get("lat"),
-                "lon": geo.get("lng")
-
+                'display_name': short_name,
+                'full_address': full_address,
+                'lat':          geometry.get('lat', 0),
+                'lon':          geometry.get('lng', 0),
             })
-
         return jsonify(results)
-
     except Exception as e:
-
         print("Autocomplete error:", e)
         return jsonify([])
 
@@ -322,7 +532,6 @@ def autocomplete():
 # ==============================
 # RUN APP
 # ==============================
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
 
+if __name__ == "__main__":
+    app.run(debug=True)
