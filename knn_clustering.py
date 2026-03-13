@@ -70,7 +70,7 @@ class EVStationClusterer:
 
     # ── Training ───────────────────────────────────────────────────────────────
 
-    def fit(self, n_clusters: int = 15, n_neighbors: int = 5):
+    def fit(self, n_clusters: int = 15, n_neighbors: int = 3):
         """
         Train KMeans clustering + KNN on the station coordinates.
 
