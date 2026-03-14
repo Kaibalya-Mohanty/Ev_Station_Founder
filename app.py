@@ -183,8 +183,13 @@ def get_demand_level(demand_score):
         return "High Demand"
 
 
-# Ranking weight used for sorting (lower = better / more preferred)
-DEMAND_RANK = {"Low Demand": 1, "Medium Demand": 2, "High Demand": 3}
+# Distance penalty (in km) added to a station's effective score based on demand.
+# Low Demand  → no penalty   (preferred)
+# Medium Demand → +1.0 km penalty
+# High Demand   → +2.0 km penalty
+# This lets a Low Demand station 7.79 km away beat a High Demand one at 7.16 km
+# (effective scores: 7.79 vs 9.16) — tune values here to adjust sensitivity.
+DEMAND_PENALTY = {"Low Demand": 0.0, "Medium Demand": 1.0, "High Demand": 2.0}
 
 
 # ==============================
@@ -384,16 +389,13 @@ def result():
                 print("KNN lookup error:", e)
 
         # ── UPDATED Smart Ranking ─────────────────────────────────────────────
-        # Sort by 1-km distance buckets first, then demand level (Low → Medium → High),
-        # then exact distance within the same bucket.
-        # This ensures a nearby Low Demand station is preferred over a slightly
-        # closer High Demand one.
+        # Effective score = actual distance + demand penalty (km equivalent).
+        # Low Demand adds 0 km, Medium adds 1 km, High adds 2 km.
+        # Example: Low Demand at 7.79 km  → score 7.79
+        #          High Demand at 7.16 km → score 9.16  ← ranked lower
+        # Stations sorted by this single score (ascending = best first).
         nearby_stations.sort(
-            key=lambda x: (
-                round(x['distance']),                        # 1 km bucket
-                DEMAND_RANK.get(x['demand_level'], 2),       # Low=1, Med=2, High=3
-                x['distance']                                # exact distance as tiebreaker
-            )
+            key=lambda x: x['distance'] + DEMAND_PENALTY.get(x['demand_level'], 1.0)
         )
 
         # Remove duplicate stations
