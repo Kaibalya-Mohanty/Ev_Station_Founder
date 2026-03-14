@@ -13,7 +13,7 @@ import requests as http_requests
 app = Flask(__name__)
 
 # 🔐 SECRET KEY
-app.config['SECRET_KEY'] = "ev_charge_finder_secret_key_2026"
+app.config['SECRET_KEY'] = os.environ.get("SECRET_KEY")
 
 DATABASE = "users.db"
 df = None
@@ -363,6 +363,7 @@ def result():
         nearby_stations.sort(
             key=lambda x: (x['distance'], -x['demand_score'])
         )
+
         # Remove duplicate stations
         seen = set()
         unique_stations = []
@@ -479,12 +480,11 @@ def cluster_map():
     )
 
 
-
 # ==============================
 # OPENCAGE API KEY
 # ==============================
 
-OPENCAGE_API_KEY = "4da581d65658457e9ebc72841754dc48"
+OPENCAGE_API_KEY = os.environ.get("OPENCAGE_API_KEY")
 
 
 # ==============================
@@ -506,7 +506,7 @@ def autocomplete():
                 'key':            OPENCAGE_API_KEY,
                 'limit':          6,
                 'language':       'en',
-                'countrycode':    'in',       # India only
+                'countrycode':    'in',
                 'no_annotations': 1,
                 'no_record':      1,
             },
@@ -517,7 +517,6 @@ def autocomplete():
         for item in data.get('results', []):
             comp     = item.get('components', {})
             geometry = item.get('geometry', {})
-            # Build clean short label: neighbourhood → city → state (max 3 parts)
             name_parts = []
             for field in ['neighbourhood', 'suburb', 'village', 'town',
                           'city', 'county', 'state_district', 'state']:
