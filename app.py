@@ -170,6 +170,24 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 
 
 # ==============================
+# DEMAND LEVEL HELPER
+# ==============================
+
+def get_demand_level(demand_score):
+    """Convert numeric demand score to Low / Medium / High label."""
+    if demand_score < 80:
+        return "Low Demand"
+    elif demand_score < 140:
+        return "Medium Demand"
+    else:
+        return "High Demand"
+
+
+# Ranking weight used for sorting (lower = better / more preferred)
+DEMAND_RANK = {"Low Demand": 1, "Medium Demand": 2, "High Demand": 3}
+
+
+# ==============================
 # LANDING PAGE
 # ==============================
 
@@ -319,6 +337,9 @@ def result():
 
                     demand = predict_station_demand(s_lat, s_lon)
 
+                    # ── NEW: human-readable demand label ──────────────────────
+                    demand_level = get_demand_level(demand)
+
                     nearby_stations.append({
 
                         "name": str(row.get('name', 'N/A')),
@@ -329,6 +350,9 @@ def result():
                         "distance": round(dist, 2),
 
                         "demand_score": demand,
+
+                        # ── NEW field ─────────────────────────────────────────
+                        "demand_level": demand_level,
 
                         "address": str(row.get('address', 'N/A')),
 
@@ -359,10 +383,19 @@ def result():
             except Exception as e:
                 print("KNN lookup error:", e)
 
-        # Smart ranking
+        # ── UPDATED Smart Ranking ─────────────────────────────────────────────
+        # Sort by 1-km distance buckets first, then demand level (Low → Medium → High),
+        # then exact distance within the same bucket.
+        # This ensures a nearby Low Demand station is preferred over a slightly
+        # closer High Demand one.
         nearby_stations.sort(
-            key=lambda x: (x['distance'], -x['demand_score'])
+            key=lambda x: (
+                round(x['distance']),                        # 1 km bucket
+                DEMAND_RANK.get(x['demand_level'], 2),       # Low=1, Med=2, High=3
+                x['distance']                                # exact distance as tiebreaker
+            )
         )
+
         # Remove duplicate stations
         seen = set()
         unique_stations = []
@@ -546,4 +579,3 @@ def autocomplete():
 
 if __name__ == "__main__":
     app.run(debug=True)
-
