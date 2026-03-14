@@ -363,6 +363,17 @@ def result():
         nearby_stations.sort(
             key=lambda x: (x['distance'], -x['demand_score'])
         )
+        # Remove duplicate stations
+        seen = set()
+        unique_stations = []
+
+        for s in nearby_stations:
+            key = (round(s['lat'], 5), round(s['lon'], 5))
+            if key not in seen:
+                seen.add(key)
+                unique_stations.append(s)
+
+        nearby_stations = unique_stations
 
         # User's cluster zone info
         user_cluster = None
