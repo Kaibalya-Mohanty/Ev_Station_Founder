@@ -237,6 +237,7 @@ body{font-family:Arial;background:#f8fafc;}
   border-left:5px solid #10b981;
   transition:transform 0.2s,box-shadow 0.2s;
 }
+
 .station-card:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,0.08);}
 
 .ai-badge{
@@ -387,13 +388,13 @@ body{font-family:Arial;background:#f8fafc;}
 
   <!-- STATIONS GRID -->
   <div class="stations-grid">
-    {% for s in stations %}
+   {% for s in stations %}
     <div class="station-card"
-         style="border-left-color:{{ s.cluster_color if s.cluster_color != '#888888' else '#10b981' }};">
+     style="border-left-color:{{ s.cluster_color if s.cluster_color != '#888888' else '#10b981' }};">
 
-      {% if loop.index == 1 %}
+    {% if loop.index <= 3 %}
       <div class="ai-badge">🏆 AI Recommended</div>
-      {% endif %}
+    {% endif %}
 
       {% if s.cluster_id != -1 %}
       <div class="zone-tag" style="background:{{ s.cluster_color }};">
