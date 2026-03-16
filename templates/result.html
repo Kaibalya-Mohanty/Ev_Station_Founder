@@ -804,6 +804,33 @@ map.fitBounds(
   L.circle([{{ u_lat }}, {{ u_lon }}], { radius: {{ max_range }}*1000 }).getBounds()
 );
 
+// ── OSRM HELPERS ─────────────────────────────────────────────────────────────
+// Multiple OSRM endpoints tried in order — public demo is often rate-limited
+const OSRM_BASES = [
+  'https://router.project-osrm.org',
+  'https://routing.openstreetmap.de/routed-car',
+];
+
+async function fetchOSRM(srcLat, srcLon, dstLat, dstLon) {
+  for (const base of OSRM_BASES) {
+    const ctrl = new AbortController();
+    const tid  = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      // OSRM expects [lon,lat] in the URL
+      const url = `${base}/route/v1/driving/${srcLon},${srcLat};${dstLon},${dstLat}?overview=full&geometries=geojson`;
+      const r = await fetch(url, { signal: ctrl.signal });
+      clearTimeout(tid);
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (d.code === 'Ok' && d.routes?.length) return d.routes[0];
+    } catch(e) {
+      clearTimeout(tid);
+      console.warn(`OSRM failed at ${base}:`, e.message);
+    }
+  }
+  return null;   // all endpoints failed → caller uses straight-line fallback
+}
+
 // ── PREVIEW PINS ──────────────────────────────────────────────────────────────
 function showPreviewPin(inputId, lat, lon, label) {
   if (previewPins[inputId]) { map.removeLayer(previewPins[inputId]); delete previewPins[inputId]; }
@@ -933,13 +960,21 @@ function haversine(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-function distPointToRoute(lat, lon, routeCoords) {
+// routeCoords from OSRM GeoJSON are [lon, lat] pairs — unpack carefully
+function distPointToRoute(pLat, pLon, routeCoords) {
   let minDist = Infinity;
-  for (let i = 0; i < routeCoords.length-1; i++) {
-    const [lon1,lat1] = routeCoords[i], [lon2,lat2] = routeCoords[i+1];
-    const dx = lon2-lon1, dy = lat2-lat1;
-    const t = Math.max(0, Math.min(1, ((lon-lon1)*dx+(lat-lat1)*dy)/(dx*dx+dy*dy+1e-10)));
-    const d = haversine(lat, lon, lat1+t*dy, lon1+t*dx);
+  for (let i = 0; i < routeCoords.length - 1; i++) {
+    const [aLon, aLat] = routeCoords[i];
+    const [bLon, bLat] = routeCoords[i + 1];
+    // Project point onto segment in lon/lat space (good enough at city scale)
+    const dx = bLon - aLon, dy = bLat - aLat;
+    const lenSq = dx * dx + dy * dy + 1e-12;
+    const t = Math.max(0, Math.min(1,
+      ((pLon - aLon) * dx + (pLat - aLat) * dy) / lenSq
+    ));
+    const closestLat = aLat + t * dy;
+    const closestLon = aLon + t * dx;
+    const d = haversine(pLat, pLon, closestLat, closestLon);
     if (d < minDist) minDist = d;
   }
   return minDist;
@@ -960,14 +995,23 @@ function clearRoute() {
 }
 
 // ── GET ROUTE ─────────────────────────────────────────────────────────────────
+let routeRunning = false;   // guard against double-clicks
+
 async function getRoute() {
+  if (routeRunning) return;
+  routeRunning = true;
+
   const srcEl = document.getElementById('source');
   const dstEl = document.getElementById('destination');
   const corKm = parseFloat(document.getElementById('corridorKm').value);
   const box   = document.getElementById('routeResult');
   const btn   = document.getElementById('findBtn');
 
-  if (!srcEl.value.trim() || !dstEl.value.trim()) { alert("Please enter both source and destination"); return; }
+  if (!srcEl.value.trim() || !dstEl.value.trim()) {
+    alert("Please enter both source and destination");
+    routeRunning = false;
+    return;
+  }
 
   btn.textContent = '⏳ Finding...'; btn.disabled = true;
   box.style.display = 'block';
@@ -979,65 +1023,76 @@ async function getRoute() {
   try {
     const src = await getCoordinates(srcEl);
     const dst = await getCoordinates(dstEl);
-    if (!src || !dst) { btn.textContent = 'Find Route →'; btn.disabled = false; return; }
+    if (!src || !dst) { btn.textContent = 'Find Route →'; btn.disabled = false; routeRunning = false; return; }
 
-    box.innerHTML = '🗺️ Fetching route...';
+    box.innerHTML = '🗺️ Fetching road route...';
 
     let routeCoords, totalKm, totalMins = null;
 
-    async function tryOSRM(profile) {
-      const ctrl = new AbortController();
-      const tid  = setTimeout(() => ctrl.abort(), 7000);
-      try {
-        const r = await fetch(
-          `https://router.project-osrm.org/route/v1/${profile}/${src[1]},${src[0]};${dst[1]},${dst[0]}?overview=full&geometries=geojson`,
-          { signal: ctrl.signal }
-        );
-        clearTimeout(tid);
-        const d = await r.json();
-        if (d.code === 'Ok' && d.routes?.length) return d.routes[0];
-      } catch { clearTimeout(tid); }
-      return null;
-    }
+    // src = [lat, lon], dst = [lat, lon]
+    const osrmRoute = await fetchOSRM(src[0], src[1], dst[0], dst[1]);
 
-    const route = await tryOSRM('driving');
-    if (route) {
-      routeCoords = route.geometry.coordinates;
-      totalKm     = (route.distance / 1000).toFixed(1);
-      totalMins   = Math.round(route.duration / 60);
+    if (osrmRoute) {
+      // GeoJSON coordinates are [lon, lat]
+      routeCoords = osrmRoute.geometry.coordinates;
+      totalKm     = (osrmRoute.distance / 1000).toFixed(1);
+      totalMins   = Math.round(osrmRoute.duration / 60);
     } else {
-      const steps = 50; routeCoords = [];
+      // Straight-line fallback — coords stored as [lon, lat] to match OSRM format
+      console.warn('All OSRM endpoints failed — using straight-line fallback');
+      const steps = 60;
+      routeCoords = [];
       for (let i = 0; i <= steps; i++) {
-        const t = i/steps;
-        routeCoords.push([src[1]+t*(dst[1]-src[1]), src[0]+t*(dst[0]-src[0])]);
+        const t = i / steps;
+        routeCoords.push([
+          src[1] + t * (dst[1] - src[1]),   // lon
+          src[0] + t * (dst[0] - src[0])    // lat
+        ]);
       }
-      totalKm = haversine(src[0],src[1],dst[0],dst[1]).toFixed(1);
+      totalKm = haversine(src[0], src[1], dst[0], dst[1]).toFixed(1);
     }
 
-    if (routeLayer) map.removeLayer(routeLayer);
+    // Clear old layers
+    if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
     routeMarkers.forEach(m => map.removeLayer(m)); routeMarkers = [];
 
+    // Draw route — Leaflet L.geoJSON expects [lon, lat] (GeoJSON standard) ✓
     routeLayer = L.geoJSON(
-      { type:'Feature', geometry:{ type:'LineString', coordinates:routeCoords } },
-      { style:{ color:'#60a5fa', weight:5, opacity:0.9 } }
+      { type: 'Feature', geometry: { type: 'LineString', coordinates: routeCoords } },
+      { style: { color: '#60a5fa', weight: 5, opacity: 0.9 } }
     ).addTo(map);
 
-    const srcM = L.circleMarker([src[0],src[1]], { radius:9, fillColor:'#00e5a0', color:'#080e12', weight:2.5, fillOpacity:1, zIndexOffset:1000 }).addTo(map).bindPopup(`<b>📍 ${srcEl.value.split(',')[0]}</b><br>Start`);
-    const dstM = L.circleMarker([dst[0],dst[1]], { radius:9, fillColor:'#f87171', color:'#080e12', weight:2.5, fillOpacity:1, zIndexOffset:1000 }).addTo(map).bindPopup(`<b>🏁 ${dstEl.value.split(',')[0]}</b><br>Destination`);
+    // Start / end markers
+    const srcM = L.circleMarker([src[0], src[1]], {
+      radius: 9, fillColor: '#00e5a0', color: '#080e12', weight: 2.5, fillOpacity: 1, zIndexOffset: 1000
+    }).addTo(map).bindPopup(`<b>📍 ${srcEl.value.split(',')[0]}</b><br>Start`);
+
+    const dstM = L.circleMarker([dst[0], dst[1]], {
+      radius: 9, fillColor: '#f87171', color: '#080e12', weight: 2.5, fillOpacity: 1, zIndexOffset: 1000
+    }).addTo(map).bindPopup(`<b>🏁 ${dstEl.value.split(',')[0]}</b><br>Destination`);
+
     routeMarkers.push(srcM, dstM);
 
     box.innerHTML = '📍 Finding stations along route...';
 
+    // Find stations within corridor distance of the route
     const along = [];
     ALL_STATIONS.forEach(s => {
+      // s.lat / s.lon are plain numbers from Python
       const d = distPointToRoute(s.lat, s.lon, routeCoords);
       if (d <= corKm) along.push({ ...s, distToRoute: d.toFixed(1) });
     });
-    along.sort((a,b) => haversine(src[0],src[1],a.lat,a.lon) - haversine(src[0],src[1],b.lat,b.lon));
+
+    // Sort by travel order (distance from source)
+    along.sort((a, b) =>
+      haversine(src[0], src[1], a.lat, a.lon) -
+      haversine(src[0], src[1], b.lat, b.lon)
+    );
 
     along.forEach(s => {
-      const m = L.circleMarker([s.lat,s.lon], {
-        radius:10, fillColor:s.cluster_color, color:'#080e12', weight:2.5, fillOpacity:1, zIndexOffset:500
+      const m = L.circleMarker([s.lat, s.lon], {
+        radius: 10, fillColor: s.cluster_color,
+        color: '#080e12', weight: 2.5, fillOpacity: 1, zIndexOffset: 500
       }).addTo(map).bindPopup(
         `<b>${s.name}</b><br>${s.city}, ${s.state}<br>` +
         `<span style="color:#00e5a0;font-weight:600">⚡ ${s.distToRoute} km from route</span><br>` +
@@ -1046,22 +1101,29 @@ async function getRoute() {
       routeMarkers.push(m);
     });
 
+    // Success banner
     box.style.background = 'rgba(0,229,160,0.06)';
     box.style.borderColor = 'rgba(0,229,160,0.2)';
     box.style.color = '#00e5a0';
+
+    const srcName = srcEl.value.split(',')[0].trim();
+    const dstName = dstEl.value.split(',')[0].trim();
+    const fallbackNote = osrmRoute ? '' : ' <small style="color:#fbbf24">(straight-line estimate)</small>';
+
     box.innerHTML =
-      `✅ <b>${srcEl.value.split(',')[0].trim()} → ${dstEl.value.split(',')[0].trim()}</b>` +
-      ` &nbsp;·&nbsp; <b>${totalKm} km</b>` +
-      (totalMins ? ` &nbsp;·&nbsp; <b>${totalMins} min</b>` : '') +
-      ` &nbsp;·&nbsp; <b>${along.length} EV stations</b> within ${corKm} km` +
+      `✅ <b>${srcName} → ${dstName}</b>` +
+      ` &nbsp;·&nbsp; <b>${totalKm} km</b>${fallbackNote}` +
+      (totalMins ? ` &nbsp;·&nbsp; <b>${totalMins} min drive</b>` : '') +
+      ` &nbsp;·&nbsp; <b>${along.length} EV station${along.length !== 1 ? 's' : ''}</b> within ${corKm} km of route` +
       (along.length === 0
-        ? `<br><span style="color:#f87171">No stations found — try a wider corridor.</span>`
-        : `<br><small style="color:var(--muted)">Click any coloured dot on the map for details.</small>`
+        ? `<br><span style="color:#f87171">No stations found — try a wider corridor or different route.</span>`
+        : `<br><small style="color:var(--muted)">Stations sorted by travel order. Click any dot for details.</small>`
       );
 
-    map.fitBounds(routeLayer.getBounds(), { padding:[40,40] });
+    map.fitBounds(routeLayer.getBounds(), { padding: [40, 40] });
 
-  } catch(err) {
+  } catch (err) {
+    console.error('Route error:', err);
     box.style.background = 'rgba(248,113,113,0.08)';
     box.style.borderColor = 'rgba(248,113,113,0.3)';
     box.style.color = '#f87171';
@@ -1069,6 +1131,7 @@ async function getRoute() {
   }
 
   btn.textContent = 'Find Route →'; btn.disabled = false;
+  routeRunning = false;
 }
 
 </script>
