@@ -21,6 +21,12 @@ df = None
 ml_model = None
 clusterer = None
 
+# ==============================
+# ADMIN CONFIG
+# Set ADMIN_USERNAME as an env variable in production (Render dashboard)
+# ==============================
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+
 
 # ==============================
 # DATABASE CONNECTION
@@ -538,6 +544,81 @@ def autocomplete():
     except Exception as e:
         print("Autocomplete error:", e)
         return jsonify([])
+
+
+# ==============================
+# ADMIN PANEL
+# GET /admin
+# Only accessible to the user whose username matches ADMIN_USERNAME
+# ==============================
+
+@app.route('/admin')
+def admin():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    if session.get('username') != ADMIN_USERNAME:
+        flash("Access denied. Admins only.", "error")
+        return redirect(url_for('dashboard'))
+
+    conn = get_db_connection()
+    users = conn.execute(
+        "SELECT id, username, email, created_at FROM users ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+
+    total_users    = len(users)
+    total_stations = len(df) if df is not None and not df.empty else 0
+
+    # Build station list from CSV (first 200 rows to keep page fast)
+    stations = []
+    if df is not None and not df.empty:
+        for _, row in df.head(200).iterrows():
+            stations.append({
+                "name":      row.get('name', 'N/A'),
+                "city":      row.get('city', 'N/A'),
+                "state":     row.get('state', 'N/A'),
+                "lattitude": row.get('lattitude', ''),
+                "longitude": row.get('longitude', ''),
+                "type":      row.get('type', 'N/A'),
+            })
+
+    return render_template(
+        "admin.html",
+        users          = users,
+        stations       = stations,
+        total_users    = total_users,
+        total_stations = total_stations,
+        username       = session['username'],
+    )
+
+
+# ==============================
+# ADMIN — DELETE USER
+# POST /admin/delete/<id>
+# ==============================
+
+@app.route('/admin/delete/<int:user_id>', methods=['POST'])
+def admin_delete_user(user_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    if session.get('username') != ADMIN_USERNAME:
+        flash("Access denied.", "error")
+        return redirect(url_for('dashboard'))
+
+    # Prevent admin from deleting their own account
+    if user_id == session['user_id']:
+        flash("You cannot delete your own admin account.", "error")
+        return redirect(url_for('admin'))
+
+    conn = get_db_connection()
+    conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+    flash(f"User #{user_id} deleted successfully.", "success")
+    return redirect(url_for('admin'))
 
 
 # ==============================
